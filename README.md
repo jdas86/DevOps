@@ -1,1 +1,1 @@
-# sol-arch-practice
+# devops Terraform, Git, Github Action
