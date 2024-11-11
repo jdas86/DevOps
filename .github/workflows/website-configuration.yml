@@ -1,0 +1,84 @@
+name: Configure Website on EC2
+
+on:
+  workflow_run:
+    workflows: ["Deploy EC2 Instance"]
+    types:
+      - completed
+
+jobs:
+  configure-website:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up AWS CLI
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: Get EC2 Public IP Address
+        id: get_ip
+        run: |
+          INSTANCE_ID=$(aws ec2 describe-instances \
+            --filters "Name=tag:Name,Values=MyEC2Instance" \
+            --query "Reservations[0].Instances[0].InstanceId" --output text)
+          PUBLIC_IP=$(aws ec2 describe-instances \
+            --instance-ids $INSTANCE_ID \
+            --query "Reservations[0].Instances[0].PublicIpAddress" --output text)
+          echo "PUBLIC_IP=${PUBLIC_IP}" >> $GITHUB_ENV
+
+      - name: Copy Website Files from S3 to EC2
+        run: |
+          scp -i /path/to/dynamic-key.pem -o StrictHostKeyChecking=no -r s3://www.t-compute.com/ ec2-user@${{ env.PUBLIC_IP }}:/var/www/html/
+
+      - name: Configure Nginx for HTTP, HTTPS, and WWW
+        run: |
+          ssh -i /path/to/dynamic-key.pem -o StrictHostKeyChecking=no ec2-user@${{ env.PUBLIC_IP }} << EOF
+            # Install Nginx and Certbot
+            sudo yum install -y nginx certbot python3-certbot-nginx
+            sudo systemctl start nginx
+
+            # Create Nginx config for HTTP, HTTPS, and WWW
+            sudo tee /etc/nginx/conf.d/t-compute.com.conf > /dev/null <<EOL
+            server {
+                listen 80;
+                server_name t-compute.com www.t-compute.com;
+
+                location / {
+                    root /var/www/html;
+                    index index.html;
+                }
+
+                # Redirect HTTP to HTTPS
+                location / {
+                    rewrite ^ https://www.t-compute.com$request_uri? permanent;
+                }
+            }
+
+            server {
+                listen 443 ssl;
+                server_name t-compute.com www.t-compute.com;
+
+                ssl_certificate /etc/letsencrypt/live/www.t-compute.com/fullchain.pem;
+                ssl_certificate_key /etc/letsencrypt/live/www.t-compute.com/privkey.pem;
+                ssl_protocols TLSv1.2 TLSv1.3;
+                ssl_ciphers HIGH:!aNULL:!MD5;
+
+                location / {
+                    root /var/www/html;
+                    index index.html;
+                }
+            }
+            EOL
+
+            # Use Certbot to get SSL certificate
+            sudo certbot --nginx -d t-compute.com -d www.t-compute.com --non-interactive --agree-tos -m your-email@example.com
+
+            # Reload Nginx to apply changes
+            sudo systemctl reload nginx
+          EOF
