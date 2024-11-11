@@ -2,28 +2,30 @@ name: Configure Website on EC2
 
 on:
   workflow_run:
-    workflows: ["Deploy EC2 Instance"]
+    workflows: ["Terraform CI CD Pipeline for Deploying AWS Resources"]
     types:
       - completed
 
 jobs:
   configure-website:
+    name: Setup Website and Configure Nginx
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
+      - name: Checkout Code
+        uses: actions/checkout@v2
 
       - name: Set up AWS CLI
         uses: aws-actions/configure-aws-credentials@v2
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: us-east-1
 
-      - name: Get EC2 Public IP Address
-        id: get_ip
+      - name: Fetch EC2 Instance Public IP
+        id: fetch_ip
         run: |
+          # Fetch the EC2 instance public IP based on your tag or instance name
           INSTANCE_ID=$(aws ec2 describe-instances \
             --filters "Name=tag:Name,Values=MyEC2Instance" \
             --query "Reservations[0].Instances[0].InstanceId" --output text)
@@ -32,13 +34,18 @@ jobs:
             --query "Reservations[0].Instances[0].PublicIpAddress" --output text)
           echo "PUBLIC_IP=${PUBLIC_IP}" >> $GITHUB_ENV
 
+      - name: Set up SSH private key
+        run: |
+          echo "${{ secrets.EC2_PRIVATE_KEY }}" > ~/.ssh/dynamic-key.pem
+          chmod 600 ~/.ssh/dynamic-key.pem
+
       - name: Copy Website Files from S3 to EC2
         run: |
-          scp -i /path/to/dynamic-key.pem -o StrictHostKeyChecking=no -r s3://www.t-compute.com/ ec2-user@${{ env.PUBLIC_IP }}:/var/www/html/
+          scp -i ~/.ssh/dynamic-key.pem -o StrictHostKeyChecking=no -r s3://www.t-compute.com/ ec2-user@${{ env.PUBLIC_IP }}:/var/www/html/
 
       - name: Configure Nginx for HTTP, HTTPS, and WWW
         run: |
-          ssh -i /path/to/dynamic-key.pem -o StrictHostKeyChecking=no ec2-user@${{ env.PUBLIC_IP }} << EOF
+          ssh -i ~/.ssh/dynamic-key.pem -o StrictHostKeyChecking=no ec2-user@${{ env.PUBLIC_IP }} << EOF
             # Install Nginx and Certbot
             sudo yum install -y nginx certbot python3-certbot-nginx
             sudo systemctl start nginx
